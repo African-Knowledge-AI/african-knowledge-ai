@@ -1,0 +1,34 @@
+# FastAPI and ASGI server
+fastapi
+uvicorn
+
+# Machine Learning & AI
+torch
+transformers
+numpy
+sentencepiece  # Required for MarianTokenizer
+
+# Pydantic for data validation
+pydantic
+
+# HTTP requests handling
+httpx
+
+# Form data handling
+python-multipart
+
+# Authentication & Security
+passlib[bcrypt]  # Password hashing
+PyJWT  # JWT authentication
+
+# Database ORM and Drivers
+sqlalchemy
+databases
+psycopg2-binary  # PostgreSQL driver
+pymysql  # MySQL driver
+
+# Background tasks
+celery
+
+# CORS support (optional)
+fastapi[all]
