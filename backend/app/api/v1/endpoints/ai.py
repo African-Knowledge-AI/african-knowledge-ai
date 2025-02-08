@@ -6,6 +6,8 @@ import os
 
 router = APIRouter()
 
+# Translation model to handle speech to text
+
 # Translation model setup (Helsinki-NLP/opus-mt-en-de)
 translation_model = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-de")
 translation_tokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-de")
