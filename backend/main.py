@@ -1,7 +1,6 @@
 
 from fastapi import FastAPI
-from app.api.v1.endpoints import auth, ai
-
+from backend.app.api.v1.endpoints import auth, ai
 
 app = FastAPI()
 
@@ -15,3 +14,4 @@ async def root():
 
 
 
+   

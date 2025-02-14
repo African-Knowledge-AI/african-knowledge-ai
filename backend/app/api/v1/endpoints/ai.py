@@ -1,56 +1,88 @@
-from transformers import MarianMTModel, MarianTokenizer, Wav2Vec2ForCTC, Wav2Vec2Processor
-from fastapi import APIRouter, HTTPException, UploadFile, File
-import torch
-import torchaudio
+from fastapi import APIRouter, UploadFile, File, Query, HTTPException
+import openai
+from dotenv import load_dotenv
 import os
+import subprocess
+from transformers import WhisperProcessor, WhisperForConditionalGeneration, pipeline
+
+load_dotenv()  # Load variables from .env
+dotenv_path = os.path.join(os.getcwd(), ".env")
+print(f"Loading .env from: {dotenv_path}")
+load_dotenv(dotenv_path=dotenv_path)
+
+api_key = os.getenv("OPENAI_API_KEY")
+print("OPENAI_API_KEY:", api_key)
 
 router = APIRouter()
 
-# Translation model to handle speech to text
-
-# Translation model setup (Helsinki-NLP/opus-mt-en-de)
-translation_model = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-en-de")
-translation_tokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-de")
-
-# Speech recognition model setup (Wav2Vec2)
-speech_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-large-960h")
-speech_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-large-960h")
-
-# Enable FFmpeg for AAC support
-torchaudio.set_audio_backend("ffmpeg")
-
-@router.post("/translate")
-async def translate(text: str):
-    # Perform translation
-    tokens = translation_tokenizer.encode(text, return_tensors="pt")
-    translated_tokens = translation_model.generate(tokens, max_length=200)
-    translated_text = translation_tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
-    return {"translated_text": translated_text}
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Securely load API key
+HF_WHISPER_MODEL = "openai/whisper-base"  # Replace with your HF model name
 
 @router.post("/speech-to-text")
-async def speech_to_text(audio_file: UploadFile = File(...)):
+async def speech_to_text(
+    audio_file: UploadFile = File(...),
+    model: str = Query("openai", enum=["openai", "huggingface"])  # Accept `model` as a query parameter
+):
+    """
+    Transcribes speech to text using either OpenAI Whisper or Hugging Face Whisper.
+    
+    Parameters:
+    - `audio_file`: The uploaded audio file.
+    - `model`: Choose between `"openai"` (default) or `"huggingface"`.
+    
+    Returns:
+    - A JSON response with the transcription and model used.
+    """
     try:
-        # Save uploaded file temporarily
-        file_ext = audio_file.filename.split(".")[-1]
-        file_path = f"temp_audio.{file_ext}"
+        file_ext = audio_file.filename.split(".")[-1].lower()
+        original_path = f"temp_audio.{file_ext}"
+        converted_path = "converted_audio.mp3"
 
-        with open(file_path, "wb") as f:
+        # Save the uploaded audio file
+        with open(original_path, "wb") as f:
             f.write(await audio_file.read())
 
-        # Load the audio file with FFmpeg backend (supports AAC)
-        waveform, sample_rate = torchaudio.load(file_path)
+        # Convert if necessary
+        if file_ext not in ["flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"]:
+            subprocess.run(["ffmpeg", "-i", original_path, "-ac", "1", "-ar", "16000", "-y", converted_path], check=True)
+            file_to_use = converted_path
+        else:
+            file_to_use = original_path
 
-        # Process the audio with Wav2Vec2
-        inputs = speech_processor(waveform, return_tensors="pt", sampling_rate=sample_rate)
-        with torch.no_grad():
-            logits = speech_model(input_values=inputs.input_values).logits
-        predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = speech_processor.decode(predicted_ids[0])
+        # OpenAI Whisper
+        if model == "openai":
+            with open(file_to_use, "rb") as audio:
+                client = openai.OpenAI(api_key=OPENAI_API_KEY)
+                response = client.audio.transcriptions.create(model="whisper-1", file=audio)
+                transcription = response.text
+                model_used = "OpenAI Whisper"
 
-        # Delete the temp file
-        os.remove(file_path)
+        # Hugging Face Whisper
+        elif model == "huggingface":
+            speech_recognizer = pipeline("automatic-speech-recognition", model=HF_WHISPER_MODEL)
+            transcription = speech_recognizer(file_to_use)["text"]
+            model_used = "Hugging Face Whisper"
 
-        return {"transcription": transcription}
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model selection. Choose 'openai' or 'huggingface'.")
 
+        # Cleanup temporary files
+        os.remove(original_path)
+        if os.path.exists(converted_path):
+            os.remove(converted_path)
+
+        return {
+            "message": "File transcribed successfully",
+            "transcription": transcription,
+            "model_used": model_used
+        }
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"FFmpeg conversion failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
