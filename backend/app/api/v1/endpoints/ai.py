@@ -49,6 +49,70 @@ class TranslationRequest(BaseModel):
     source_lang: str
     target_lang: str
 
+    # ✅ Dummy translator function (Replace with actual Hugging Face model)
+def translator(text, src_lang, tgt_lang):
+    return [{"translation_text": f"Translated {text} from {src_lang} to {tgt_lang}"}]
+
+
+
+@router.post("/speech-to-text")
+async def speech_to_text(
+    audio_file: UploadFile = File(...),
+    model: str = Query("openai", enum=["openai", "huggingface"])
+):
+    """
+    Transcribes speech to text using OpenAI Whisper or Hugging Face Whisper.
+    """
+    try:
+        file_ext = audio_file.filename.split(".")[-1].lower()
+        original_path = f"temp_audio.{file_ext}"
+        converted_path = "converted_audio.mp3"
+
+        # Save uploaded file
+        with open(original_path, "wb") as f:
+            f.write(await audio_file.read())
+
+        # Convert audio format if necessary
+        if file_ext not in ["flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"]:
+            subprocess.run(["ffmpeg", "-i", original_path, "-ac", "1", "-ar", "16000", "-y", converted_path], check=True)
+            file_to_use = converted_path
+        else:
+            file_to_use = original_path
+
+        # OpenAI Whisper
+        if model == "openai":
+            with open(file_to_use, "rb") as audio:
+                client = openai.OpenAI(api_key=OPENAI_API_KEY)
+                response = client.audio.transcriptions.create(model="whisper-1", file=audio)
+                transcription = response.text
+                model_used = "OpenAI Whisper"
+
+        # Hugging Face Whisper
+        elif model == "huggingface":
+            speech_recognizer = pipeline("automatic-speech-recognition", model=HF_WHISPER_MODEL)
+            transcription = speech_recognizer(file_to_use)["text"]
+            model_used = "Hugging Face Whisper"
+
+        else:
+            raise HTTPException(status_code=400, detail="Invalid model selection. Choose 'openai' or 'huggingface'.")
+
+        # Cleanup temporary files
+        os.remove(original_path)
+        if os.path.exists(converted_path):
+            os.remove(converted_path)
+
+        return {
+            "message": "File transcribed successfully",
+            "transcription": transcription,
+            "model_used": model_used
+        }
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"FFmpeg conversion failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/translate")
 async def translate_text(
     request: TranslationRequest,
