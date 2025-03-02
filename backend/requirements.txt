@@ -1,13 +1,6 @@
 # FastAPI and ASGI server
 fastapi
 uvicorn
-
-# Machine Learning & AI
-torch
-transformers
-numpy
-sentencepiece  # Required for MarianTokenizer
-
 # Pydantic for data validation
 pydantic
 
