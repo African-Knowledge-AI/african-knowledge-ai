@@ -1,0 +1,24 @@
+name: Deploy FastAPI
+
+on:
+  push:
+    branches:
+      - main  # Triggers deployment when code is pushed to 'main'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest  # Runs GitHub Actions on a virtual machine
+    steps:
+      - name: SSH into Server and Deploy
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/ubuntu/african-knowledge-ai
+            git pull origin main
+            source venv/bin/activate
+            pip install -r backend/requirements.txt
+            sudo supervisorctl restart fastapi
+
