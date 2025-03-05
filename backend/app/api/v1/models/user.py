@@ -2,7 +2,7 @@ import secrets
 from sqlalchemy import Column, String
 from app.api.v1.ai_database import Base
 
-
+#user model
 class User(Base):
     __tablename__ = "users"
 
