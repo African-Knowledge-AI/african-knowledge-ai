@@ -2,6 +2,7 @@
 from fastapi import APIRouter, UploadFile, File, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import logging
 import openai
 import os
 import io
@@ -248,49 +249,106 @@ class ChatRequest(BaseModel):
     user_input: str
 
 def get_african_response(user_input: str):
-    """Fetch response from an external API instead of using transformers."""
-    API_URL = "https://api-inference.huggingface.co/models/african-nlp/african-gpt2"
+    """Fetch bias detection response from Hugging Face API."""
+    API_URL = "https://api-inference.huggingface.co/models/d4data/bias-detection-model"
     headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-    response = requests.post(API_URL, headers=headers, json={"inputs": user_input})
-    
-    if response.status_code == 200:
-        return response.json()[0]["generated_text"]
-    return "Error fetching African model response."
-def get_response(user_input: str):
-    """Handles query processing using ChatGPT and bias detection"""
+
     try:
-        # Step 1: Get response from ChatGPT
-        chatgpt_response = openai_client.chat.completions.create(
+        response = requests.post(API_URL, headers=headers, json={"inputs": user_input})
+        logging.info(f"African Model API Response Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            response_json = response.json()
+            if isinstance(response_json, list) and response_json:
+                return response_json[0] if isinstance(response_json[0], list) else []
+
+        return "Error fetching African model response."
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request Exception: {e}")
+        return "Error: Failed to connect to the African model API."
+
+def classify_bias_level(score: float) -> str:
+    """Classifies bias on a nuanced scale."""
+    if score < 0.3:
+        return "Low"
+    elif score < 0.7:
+        return "Moderate"
+    return "High"
+
+def correct_text(original_text: str) -> str:
+    """Uses OpenAI GPT to generate a more neutral, fact-based version of a given text."""
+    prompt = f"""
+    The following text may contain bias. Please rewrite it in a neutral, fact-based manner:
+    
+    Original: "{original_text}"
+    
+    Neutral version:
+    """
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"Error correcting text: {e}")
+        return f"Error: {str(e)}"
+
+def get_response(user_input: str):
+    """Processes user input, detects bias, and suggests corrections."""
+    try:
+        response = openai_client.chat.completions.create(
             model="gpt-4",
             messages=[{"role": "user", "content": user_input}]
-        ).choices[0].message.content
-
-        # Step 2: Get response from African-aware model via API
-        african_response = get_african_response(user_input)
+        )
+        chatgpt_response = response.choices[0].message.content
         
-                # Handle failure in fetching African model response
-        if african_response.startswith("Error"):
+        # Step 1: Fetch bias analysis
+        african_response = get_african_response(user_input)
+        if isinstance(african_response, str) and "Error" in african_response:
             return {
                 "original": chatgpt_response,
-                "corrected": "Error fetching African model response.",
+                "corrected": "Error fetching bias detection results.",
                 "bias_score": "N/A",
-                "explanation": "Bias score not available due to failure in retrieving the African model response."
+                "bias_level": "Unknown",
+                "toggle_correction": False,
+                "explanation": "Bias score unavailable. Manual review recommended."
             }
-
-
-        # Step 3: Check bias in ChatGPT's response
-        corrected_response, bias_score, explanation = check_bias(chatgpt_response, african_response)
+        
+        # Step 2: Determine highest bias score
+        bias_score = max((entry.get("score", 0.0) for entry in african_response), default=0.0)
+        bias_label = classify_bias_level(bias_score)
+        
+        # Step 3: Apply correction logic
+        if bias_label == "Low":
+            corrected_text = chatgpt_response
+            toggle_correction = False
+            explanation = "Bias level is low. No significant modifications were necessary."
+        elif bias_label == "Moderate":
+            corrected_text = correct_text(chatgpt_response)
+            toggle_correction = True
+            explanation = f"Moderate bias detected (Score: {round(bias_score, 2)}). A neutral version has been generated, but review is recommended."
+        else:  # High Bias
+            corrected_text = correct_text(chatgpt_response)
+            toggle_correction = True
+            explanation = f"High bias detected (Score: {round(bias_score, 2)}). The response has been refined for neutrality, but manual review is advised."
 
         return {
             "original": chatgpt_response,
-            "corrected": corrected_response,
-            "bias_score": bias_score,
+            "corrected": corrected_text,
+            "bias_score": round(bias_score, 2),
+            "bias_level": bias_label,
+            "toggle_correction": toggle_correction,
             "explanation": explanation
         }
+
     except Exception as e:
+        logging.error(f"Unexpected Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    """API endpoint for getting responses with bias detection."""
+    """API endpoint for chat responses with bias detection."""
     return get_response(request.user_input)
