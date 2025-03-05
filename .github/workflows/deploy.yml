@@ -17,8 +17,20 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /home/ubuntu/african-knowledge-ai
+            
+            # Check for modified files and stash them
+            if [[ -n "$(git status --porcelain)" ]]; then
+              git stash
+            fi
+            
+            # Pull latest changes from main branch
             git pull origin main
+            
+            # Activate virtual environment
             source venv/bin/activate
+            
+            # Install dependencies
             pip install -r backend/requirements.txt
+            
+            # Restart FastAPI service
             sudo supervisorctl restart fastapi
-
