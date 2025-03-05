@@ -26,7 +26,7 @@ celery
 # CORS support (optional)
 fastapi[all]
 
-# Additional packages detected in the environment
+# Additional packages in the environment venv
 aiohappyeyeballs
 aiohttp
 aiosignal
