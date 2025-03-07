@@ -1,5 +1,6 @@
 #from fastapi import APIRouter, Query, HTTPException
 from fastapi import APIRouter, UploadFile, File, Query, HTTPException
+import re
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import logging
@@ -10,6 +11,7 @@ import subprocess
 import requests
 from .bias_checker import check_bias
 from dotenv import load_dotenv
+from typing import Dict, List, Union 
 
 # Load environment variables
 load_dotenv()
@@ -244,26 +246,26 @@ async def text_to_speech(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-
+    
+ # Define input model
 class ChatRequest(BaseModel):
     user_input: str
 
-def get_african_response(user_input: str):
+def get_african_response(text: str) -> Union[List[Dict[str, float]], str]:
     """Fetch bias detection response from Hugging Face API."""
     API_URL = "https://api-inference.huggingface.co/models/d4data/bias-detection-model"
     headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
 
     try:
-        response = requests.post(API_URL, headers=headers, json={"inputs": user_input})
+        response = requests.post(API_URL, headers=headers, json={"inputs": text})
         logging.info(f"African Model API Response Status: {response.status_code}")
-        
+
         if response.status_code == 200:
             response_json = response.json()
             if isinstance(response_json, list) and response_json:
                 return response_json[0] if isinstance(response_json[0], list) else []
-
         return "Error fetching African model response."
-
+    
     except requests.exceptions.RequestException as e:
         logging.error(f"Request Exception: {e}")
         return "Error: Failed to connect to the African model API."
@@ -276,8 +278,24 @@ def classify_bias_level(score: float) -> str:
         return "Moderate"
     return "High"
 
-def correct_text(original_text: str) -> str:
-    """Uses OpenAI GPT to generate a more neutral, fact-based version of a given text."""
+def flag_biased_keywords(text: str) -> Dict[str, List[str]]:
+    """Identifies biased keywords and categorizes them."""
+    bias_keywords = {
+        "racial": ["uncivilized", "savage", "primitive"],
+        "economic": ["poor", "underdeveloped", "third-world"],
+        "political": ["corrupt", "dictatorship", "failed state"]
+    }
+
+    flagged = {}
+    for category, keywords in bias_keywords.items():
+        matches = [word for word in keywords if re.search(rf"\b{word}\b", text, re.IGNORECASE)]
+        if matches:
+            flagged[category] = matches
+
+    return flagged
+
+def neutralize_text(original_text: str) -> str:
+    """Uses OpenAI GPT to generate a neutral, fact-based version of a given text."""
     prompt = f"""
     The following text may contain bias. Please rewrite it in a neutral, fact-based manner:
     
@@ -286,60 +304,55 @@ def correct_text(original_text: str) -> str:
     Neutral version:
     """
     try:
-        response = openai_client.chat.completions.create(
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)  # Create client
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
-    except Exception as e:
+    except openai.OpenAIError as e:
         logging.error(f"Error correcting text: {e}")
         return f"Error: {str(e)}"
 
-def get_response(user_input: str):
+def get_response(user_input: str) -> Dict[str, Union[str, float, bool, Dict]]:
     """Processes user input, detects bias, and suggests corrections."""
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": user_input}]
-        )
-        chatgpt_response = response.choices[0].message.content
-        
-        # Step 1: Fetch bias analysis
+        # Step 1: Fetch bias analysis for the original user input
         african_response = get_african_response(user_input)
         if isinstance(african_response, str) and "Error" in african_response:
             return {
-                "original": chatgpt_response,
+                "original": user_input,
                 "corrected": "Error fetching bias detection results.",
                 "bias_score": "N/A",
                 "bias_level": "Unknown",
                 "toggle_correction": False,
                 "explanation": "Bias score unavailable. Manual review recommended."
             }
-        
+
         # Step 2: Determine highest bias score
         bias_score = max((entry.get("score", 0.0) for entry in african_response), default=0.0)
         bias_label = classify_bias_level(bias_score)
-        
-        # Step 3: Apply correction logic
+
+        # Step 3: Flag biased keywords manually
+        flagged_keywords = flag_biased_keywords(user_input)
+
+        # Step 4: Apply correction logic based on bias level
         if bias_label == "Low":
-            corrected_text = chatgpt_response
+            corrected_text = user_input
             toggle_correction = False
             explanation = "Bias level is low. No significant modifications were necessary."
-        elif bias_label == "Moderate":
-            corrected_text = correct_text(chatgpt_response)
+        else:  # Moderate or High Bias → Rewrite text
+            corrected_text = neutralize_text(user_input)
             toggle_correction = True
-            explanation = f"Moderate bias detected (Score: {round(bias_score, 2)}). A neutral version has been generated, but review is recommended."
-        else:  # High Bias
-            corrected_text = correct_text(chatgpt_response)
-            toggle_correction = True
-            explanation = f"High bias detected (Score: {round(bias_score, 2)}). The response has been refined for neutrality, but manual review is advised."
+            explanation = f"{bias_label} bias detected (Score: {round(bias_score, 2)}). A neutral version has been generated, but review is recommended."
 
         return {
-            "original": chatgpt_response,
+            "original": user_input,
             "corrected": corrected_text,
             "bias_score": round(bias_score, 2),
             "bias_level": bias_label,
+            "flagged_keywords": flagged_keywords,
             "toggle_correction": toggle_correction,
             "explanation": explanation
         }
